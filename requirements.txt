@@ -1,0 +1,6 @@
+streamlit
+anthropic
+chromadb
+pymupdf
+python-dotenv
+pandas

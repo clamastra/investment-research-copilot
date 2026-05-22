@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# CapitalContext
+data/raw_pdfs/
+data/processed/
+vector_store/
+screenshots/
