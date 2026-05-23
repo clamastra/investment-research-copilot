@@ -4,3 +4,4 @@ chromadb
 pymupdf
 python-dotenv
 pandas
+sentence-transformers

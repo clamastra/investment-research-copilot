@@ -124,7 +124,8 @@ pip install -r requirements.txt
 
 # Add your API key
 cp .env.example .env
-# Edit .env and add your Anthropic API key
+# Open .env and replace the placeholder with your real key:
+# ANTHROPIC_API_KEY=sk-ant-...
 
 # Run the app
 streamlit run app.py
@@ -137,27 +138,30 @@ streamlit run app.py
 ### ✅ Week 1 — Scaffold (Complete)
 - [x] GitHub repo created
 - [x] Python virtual environment configured
-- [x] Core dependencies installed (Streamlit, Anthropic, ChromaDB, PyMuPDF)
+- [x] Core dependencies installed (Streamlit, Anthropic, ChromaDB, PyMuPDF, sentence-transformers)
 - [x] Folder structure established
 - [x] Working Streamlit UI shell
 - [x] Prompt templates written for all 4 output modes
 - [x] `.gitignore` configured (API keys and data excluded)
 - [x] Initial commit pushed to GitHub
 
-### 🔄 Week 2 — Ingestion Pipeline (Next)
-- [ ] PDF text extraction with PyMuPDF
-- [ ] Text chunking with overlap
-- [ ] Metadata assignment (document name, page, date)
-- [ ] Embedding generation via Anthropic API
-- [ ] ChromaDB setup and indexing
-- [ ] Retrieval testing
+### ✅ Week 2 — Ingestion Pipeline (Complete)
+- [x] PDF text extraction with PyMuPDF (page by page, blank pages skipped)
+- [x] Text chunking with overlap (1,500 char chunks, 150 char overlap)
+- [x] Metadata assignment per chunk (source name, page number, filename)
+- [x] Local embeddings via sentence-transformers (all-MiniLM-L6-v2, runs on device)
+- [x] ChromaDB setup with cosine similarity and persistent disk storage
+- [x] Ingestion tested against 4 Vanguard PDFs — 1,011 chunks indexed
+- [x] Ingest button wired into Streamlit UI
 
-### ⬜ Week 3 — RAG Pipeline
-- [ ] Semantic retrieval from ChromaDB
-- [ ] Claude API integration
-- [ ] Citation generation
-- [ ] Hallucination controls
-- [ ] Q&A output mode
+### ✅ Week 3 — RAG Pipeline (Complete)
+- [x] Semantic retrieval from ChromaDB (top-k chunks by cosine similarity)
+- [x] Context formatting with labeled source blocks for citation
+- [x] Claude API integration (claude-3-5-haiku-20241022, configurable)
+- [x] Hallucination controls via prompt engineering (sources-only instruction)
+- [x] All 4 output modes wired to prompt templates
+- [x] Response + source chunks displayed in Streamlit UI
+- [ ] Live query testing (pending API key setup)
 
 ### ⬜ Week 4 — Structured Outputs
 - [ ] IC Memo drafting

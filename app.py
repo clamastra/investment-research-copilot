@@ -1,4 +1,6 @@
 import streamlit as st
+from ingest import ingest_all, get_collection_stats
+from rag import query as rag_query
 
 st.set_page_config(
     page_title="CapitalContext",
@@ -15,22 +17,32 @@ col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("Document Library")
-    uploaded = st.file_uploader(
-        "Upload investment documents",
-        type=["pdf"],
-        accept_multiple_files=True,
-        help="Accepts pension reports, IPS, manager letters, SEC filings, DDQs, etc.",
-    )
-    if uploaded:
-        st.success(f"{len(uploaded)} document(s) ready to ingest")
-        if st.button("Ingest Documents", type="primary"):
-            st.info("Ingestion pipeline coming in Week 2.")
+
+    stats = get_collection_stats()
+    if stats["ready"]:
+        st.success(f"Vector store ready — {stats['total_chunks']} chunks indexed")
     else:
-        st.info("No documents loaded. Upload PDFs to begin.")
+        st.info("No documents indexed yet. Click Ingest to load PDFs from data/raw_pdfs/.")
+
+    if st.button("Ingest Documents", type="primary"):
+        with st.spinner("Ingesting PDFs — this may take a minute on first run..."):
+            summary = ingest_all()
+
+        if "error" in summary:
+            st.error(summary["error"])
+        else:
+            st.success(
+                f"Ingested {summary['docs_ingested']} document(s), "
+                f"{summary['total_chunks']} chunks indexed"
+            )
+            with st.expander("Details"):
+                for filename, chunks in summary["results"].items():
+                    st.write(f"- **{filename}**: {chunks} chunks")
+            st.rerun()
 
 with col2:
     st.subheader("Research Query")
-    query = st.text_area(
+    question = st.text_area(
         "Enter your research question",
         placeholder=(
             "e.g. Summarize key risks across uploaded documents\n"
@@ -45,10 +57,27 @@ with col2:
         ["Q&A with citations", "IC Memo draft", "Risk summary", "Manager comparison"],
     )
 
-    if st.button("Run Query", type="primary", disabled=not query):
-        st.info("RAG pipeline coming in Week 2.")
+    run = st.button("Run Query", type="primary", disabled=not question)
 
     st.divider()
     st.subheader("Response")
-    st.caption("Source-grounded answers will appear here once the RAG pipeline is connected.")
-    st.empty()
+
+    if run and question:
+        with st.spinner("Retrieving sources and generating response..."):
+            result = rag_query(question=question, mode=mode)
+
+        if result["error"]:
+            st.error(result["error"])
+        else:
+            st.markdown(result["response"])
+
+            with st.expander(f"Sources used ({len(result['sources'])} chunks retrieved)"):
+                for i, chunk in enumerate(result["sources"]):
+                    st.markdown(
+                        f"**Source {i+1}:** {chunk['source']} — Page {chunk['page']} "
+                        f"*(similarity distance: {chunk['distance']})*"
+                    )
+                    st.caption(chunk["text"][:300] + "...")
+                    st.divider()
+    else:
+        st.caption("Source-grounded answers will appear here after you run a query.")
