@@ -10,16 +10,24 @@ Flow:
 """
 
 import os
-from dotenv import load_dotenv
+from pathlib import Path
 import anthropic
 from ingest import get_collection
 from prompts import QA_PROMPT, MEMO_PROMPT, RISK_PROMPT, COMPARISON_PROMPT
 
-load_dotenv()
+# Load .env manually using absolute path — reliable across all working directories
+_env_path = Path(__file__).resolve().parent / ".env"
+if _env_path.exists():
+    with open(_env_path, encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _key, _val = _line.split("=", 1)
+                os.environ[_key.strip()] = _val.strip()
 
 # --- Configuration -----------------------------------------------------------
 
-MODEL = "claude-3-5-haiku-20241022"  # swap to sonnet/opus for higher quality
+MODEL = "claude-haiku-4-5-20251001"  # swap to claude-sonnet-4-6 for higher quality
 MAX_TOKENS = 2048
 DEFAULT_N_RESULTS = 5  # number of chunks to retrieve per query
 
