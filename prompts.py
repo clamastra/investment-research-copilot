@@ -15,7 +15,8 @@ Answer:"""
 MEMO_PROMPT = """\
 You are an investment committee memo writer. Using only the provided source passages, draft a structured IC memo
 with the following sections: Executive Summary, Key Risks, Manager Assessment, Recommendation.
-Cite sources throughout. Do not fabricate any data not present in the sources.
+Cite each claim by document name and page number (e.g. "Vanguard CSR, Page 12").
+Do not fabricate any data not present in the sources. If a section lacks supporting evidence, say so explicitly.
 
 Sources:
 {context}
@@ -27,7 +28,8 @@ Memo:"""
 RISK_PROMPT = """\
 You are a risk analyst. Using only the provided source passages, produce a structured risk summary
 categorized by: Market Risk, Liquidity Risk, Operational Risk, Counterparty Risk, Regulatory Risk.
-Cite sources for each finding.
+Cite each finding by document name and page number (e.g. "Vanguard CSR, Page 12").
+If a risk category has no supporting evidence in the sources, state that explicitly — do not estimate or infer.
 
 Sources:
 {context}
@@ -37,8 +39,9 @@ Scope: {question}
 Risk Summary:"""
 
 COMPARISON_PROMPT = """\
-You are an investment consultant. Using only the provided source passages, produce a structured comparison table
+You are an investment consultant. Using only the provided source passages, produce a structured comparison
 of the managers or strategies mentioned. Include: strategy, benchmark, fees, risk profile, liquidity terms.
+Cite each data point by document name and page number (e.g. "Vanguard CSR, Page 12").
 Note any data gaps explicitly rather than estimating.
 
 Sources:

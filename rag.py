@@ -29,7 +29,10 @@ if _env_path.exists():
 
 MODEL = "claude-haiku-4-5-20251001"  # swap to claude-sonnet-4-6 for higher quality
 MAX_TOKENS = 2048
-DEFAULT_N_RESULTS = 5  # number of chunks to retrieve per query
+DEFAULT_N_RESULTS = 10   # candidate chunks to retrieve before threshold filtering
+DISTANCE_THRESHOLD = 0.7 # cosine distance cutoff — chunks above this are too dissimilar
+                          # to be useful. Range is 0 (identical) to 2 (opposite).
+                          # 0.7 is a reasonable starting point for institutional documents.
 
 # Maps UI dropdown labels to prompt templates
 PROMPT_MAP = {
@@ -44,10 +47,15 @@ PROMPT_MAP = {
 def retrieve(query: str, n_results: int = DEFAULT_N_RESULTS) -> list[dict]:
     """
     Embeds the user query and retrieves the n most semantically similar chunks
-    from ChromaDB. Returns chunks with their text, source, page, and similarity score.
+    from ChromaDB, then filters out any chunks above the distance threshold.
 
-    ChromaDB uses the same embedding model as ingestion (all-MiniLM-L6-v2),
-    so query and document vectors are comparable.
+    Two-stage approach:
+    1. Fetch n_results candidates (wider net than before)
+    2. Filter by DISTANCE_THRESHOLD — removes chunks that are too dissimilar
+       to be useful, even if they were the "best" available matches
+
+    This prevents Claude from being handed irrelevant context just because
+    ChromaDB always returns something, even for poor queries.
 
     Distance score: lower = more similar. Cosine distance of 0 = identical.
     """
@@ -67,12 +75,18 @@ def retrieve(query: str, n_results: int = DEFAULT_N_RESULTS) -> list[dict]:
 
     chunks = []
     for i, doc in enumerate(results["documents"][0]):
+        distance = round(results["distances"][0][i], 4)
+
+        # Skip chunks that are too dissimilar to be useful
+        if distance > DISTANCE_THRESHOLD:
+            continue
+
         chunks.append({
             "text": doc,
             "source": results["metadatas"][0][i]["source"],
             "page": results["metadatas"][0][i]["page"],
             "file": results["metadatas"][0][i]["file"],
-            "distance": round(results["distances"][0][i], 4),
+            "distance": distance,
         })
 
     return chunks
@@ -92,8 +106,8 @@ def format_context(chunks: list[dict]) -> str:
     source ends and another begins.
     """
     parts = []
-    for i, chunk in enumerate(chunks):
-        label = f"[Source {i + 1}: {chunk['source']}, Page {chunk['page']}]"
+    for chunk in chunks:
+        label = f"[{chunk['source']} | Page {chunk['page']}]"
         parts.append(f"{label}\n{chunk['text']}")
 
     return "\n\n---\n\n".join(parts)
