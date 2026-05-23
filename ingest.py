@@ -4,18 +4,48 @@ ingest.py — PDF Ingestion Pipeline
 Extracts text from PDFs, splits into overlapping chunks, generates local
 embeddings via sentence-transformers, and indexes into ChromaDB on disk.
 
-The entire pipeline runs locally — no data leaves the machine during ingestion.
+Each document is automatically classified into an asset class using Claude,
+based on the first page of the document. This label is stored as metadata
+on every chunk, enabling scoped retrieval at query time.
+
+The embedding pipeline runs locally — no data leaves the machine during ingestion.
+The only external call is the asset class classification (one Claude call per doc).
 """
 
+import os
 import fitz  # PyMuPDF
 import chromadb
+import anthropic
 from chromadb.utils import embedding_functions
 from pathlib import Path
+
+# --- Environment -------------------------------------------------------------
+
+_env_path = Path(__file__).resolve().parent / ".env"
+if _env_path.exists():
+    with open(_env_path, encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _key, _val = _line.split("=", 1)
+                os.environ[_key.strip()] = _val.strip()
 
 # --- Paths -------------------------------------------------------------------
 
 RAW_PDF_DIR = Path("data/raw_pdfs")
 VECTOR_STORE_DIR = Path("vector_store")
+
+# --- Asset class labels ------------------------------------------------------
+
+ASSET_CLASSES = [
+    "US Equity",
+    "International Equity",
+    "Fixed Income",
+    "Multi-Asset",
+    "Macro / Economic Outlook",
+    "ESG / CSR",
+    "Other",
+]
 
 # --- ChromaDB setup ----------------------------------------------------------
 
@@ -26,7 +56,6 @@ def get_collection():
     """
     client = chromadb.PersistentClient(path=str(VECTOR_STORE_DIR))
 
-    # Local embedding model — runs on device, no API call required
     ef = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name="all-MiniLM-L6-v2"
     )
@@ -34,9 +63,72 @@ def get_collection():
     collection = client.get_or_create_collection(
         name="investment_docs",
         embedding_function=ef,
-        metadata={"hnsw:space": "cosine"},  # cosine similarity for semantic search
+        metadata={"hnsw:space": "cosine"},
     )
     return collection
+
+
+def clear_collection():
+    """
+    Wipes the ChromaDB collection entirely.
+    Used before re-ingesting to avoid duplicate chunks or stale metadata.
+    """
+    client = chromadb.PersistentClient(path=str(VECTOR_STORE_DIR))
+    try:
+        client.delete_collection("investment_docs")
+        print("Vector store cleared.")
+    except Exception:
+        pass
+
+
+# --- Asset class classification ----------------------------------------------
+
+def classify_document(opening_text: str, doc_name: str) -> str:
+    """
+    Sends the first page of a document to Claude and returns one of the
+    predefined asset class labels.
+
+    This is a constrained classification task — Claude is given only the
+    predefined options and instructed to return exactly one label with no
+    explanation. One API call per document at ingestion time.
+
+    Falls back to "Other" if the API call fails or returns an unexpected value.
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        print(f"  -> No API key found, defaulting to 'Other' for classification")
+        return "Other"
+
+    options = "\n".join(f"- {cls}" for cls in ASSET_CLASSES)
+    prompt = f"""Classify the following investment document into exactly one of these categories:
+
+{options}
+
+Document name: {doc_name}
+Opening content (first 3 pages):
+{opening_text[:4000]}
+
+Respond with only the category name, nothing else."""
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=20,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        label = response.content[0].text.strip()
+
+        # Validate — if Claude returns something unexpected, fall back to Other
+        if label in ASSET_CLASSES:
+            return label
+        else:
+            print(f"  -> Unexpected classification '{label}', defaulting to 'Other'")
+            return "Other"
+
+    except Exception as e:
+        print(f"  -> Classification failed ({e}), defaulting to 'Other'")
+        return "Other"
 
 
 # --- PDF extraction ----------------------------------------------------------
@@ -44,14 +136,13 @@ def get_collection():
 def extract_pages(pdf_path: Path) -> list[dict]:
     """
     Opens a PDF and extracts text page by page.
-    Returns a list of dicts with page number and text.
     Skips blank or near-blank pages.
     """
     doc = fitz.open(str(pdf_path))
     pages = []
     for i, page in enumerate(doc):
         text = page.get_text().strip()
-        if len(text) > 50:  # skip pages with negligible content
+        if len(text) > 50:
             pages.append({
                 "page_num": i + 1,
                 "text": text,
@@ -65,13 +156,7 @@ def extract_pages(pdf_path: Path) -> list[dict]:
 def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 150) -> list[str]:
     """
     Splits text into overlapping character-based chunks.
-
-    chunk_size: target characters per chunk (~375 tokens)
-    overlap: characters shared between adjacent chunks to preserve context
-             across boundaries
-
-    Overlap matters: without it, a sentence split across two chunk boundaries
-    would lose context on both sides.
+    Overlap preserves context across chunk boundaries.
     """
     chunks = []
     start = 0
@@ -86,18 +171,25 @@ def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 150) -> list[st
 
 # --- Ingestion ---------------------------------------------------------------
 
-def ingest_pdf(pdf_path: Path, collection) -> int:
+def ingest_pdf(pdf_path: Path, collection) -> dict:
     """
     Ingests a single PDF into ChromaDB.
-    Returns the number of chunks indexed.
+    Classifies the document by asset class using the first page.
+    Stores source, page, file, and asset_class as metadata on every chunk.
+    Returns a summary dict.
     """
-    doc_name = pdf_path.stem  # filename without extension
+    doc_name = pdf_path.stem
     print(f"\nIngesting: {pdf_path.name}")
 
     pages = extract_pages(pdf_path)
     if not pages:
         print(f"  -> No extractable text found. Skipping.")
-        return 0
+        return {"chunks": 0, "asset_class": "Unknown"}
+
+    # Classify using first 3 pages — covers title pages, TOCs, and slide decks
+    first_pages_text = " ".join(p["text"] for p in pages[:3])
+    asset_class = classify_document(first_pages_text, doc_name)
+    print(f"  -> Classified as: {asset_class}")
 
     documents = []
     metadatas = []
@@ -109,14 +201,15 @@ def ingest_pdf(pdf_path: Path, collection) -> int:
         for chunk in chunks:
             documents.append(chunk)
             metadatas.append({
-                "source": doc_name,           # document name for citations
-                "page": page["page_num"],     # page number for citations
-                "file": pdf_path.name,        # original filename
+                "source": doc_name,
+                "page": page["page_num"],
+                "file": pdf_path.name,
+                "asset_class": asset_class,   # scoped retrieval filter
             })
             ids.append(f"{doc_name}_p{page['page_num']}_c{chunk_idx}")
             chunk_idx += 1
 
-    # Add to ChromaDB in batches of 100 to avoid memory spikes
+    # Add to ChromaDB in batches
     batch_size = 100
     for i in range(0, len(documents), batch_size):
         collection.add(
@@ -125,15 +218,19 @@ def ingest_pdf(pdf_path: Path, collection) -> int:
             ids=ids[i:i + batch_size],
         )
 
-    print(f"  -> {len(pages)} pages extracted, {chunk_idx} chunks indexed")
-    return chunk_idx
+    print(f"  -> {len(pages)} pages, {chunk_idx} chunks indexed")
+    return {"chunks": chunk_idx, "asset_class": asset_class}
 
 
-def ingest_all() -> dict:
+def ingest_all(clear_first: bool = True) -> dict:
     """
-    Ingests all PDFs found in data/raw_pdfs/ into ChromaDB.
+    Ingests all PDFs in data/raw_pdfs/ into ChromaDB.
+    Clears the collection first by default to avoid stale metadata.
     Returns a summary dict for UI display.
     """
+    if clear_first:
+        clear_collection()
+
     collection = get_collection()
     pdf_files = list(RAW_PDF_DIR.glob("*.pdf"))
 
@@ -144,9 +241,9 @@ def ingest_all() -> dict:
     total_chunks = 0
 
     for pdf_path in pdf_files:
-        chunks = ingest_pdf(pdf_path, collection)
-        results[pdf_path.name] = chunks
-        total_chunks += chunks
+        result = ingest_pdf(pdf_path, collection)
+        results[pdf_path.name] = result
+        total_chunks += result["chunks"]
 
     summary = {
         "docs_ingested": len(pdf_files),
@@ -160,21 +257,43 @@ def ingest_all() -> dict:
 
 def get_collection_stats() -> dict:
     """
-    Returns current stats about what's in the vector store.
-    Useful for the UI to show whether documents are loaded.
+    Returns current stats and the list of unique documents and asset classes
+    in the vector store. Used to populate UI filters.
     """
     try:
         collection = get_collection()
         count = collection.count()
-        return {"total_chunks": count, "ready": count > 0}
+        if count == 0:
+            return {"total_chunks": 0, "ready": False, "documents": [], "asset_classes": []}
+
+        # Sample metadata to get unique values for filters
+        sample = collection.get(limit=count, include=["metadatas"])
+
+        # Build a mapping of document -> asset_class for UI filtering
+        doc_class_map = {}
+        for m in sample["metadatas"]:
+            src = m.get("source", "Unknown")
+            cls = m.get("asset_class", "Unknown")
+            doc_class_map[src] = cls
+
+        docs = sorted(doc_class_map.keys())
+        classes = sorted(set(doc_class_map.values()))
+
+        return {
+            "total_chunks": count,
+            "ready": True,
+            "documents": docs,
+            "asset_classes": classes,
+            "doc_class_map": doc_class_map,  # doc name -> asset class
+        }
     except Exception:
-        return {"total_chunks": 0, "ready": False}
+        return {"total_chunks": 0, "ready": False, "documents": [], "asset_classes": [], "doc_class_map": {}}
 
 
 # --- Run directly ------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("CapitalContext — Ingestion Pipeline")
+    print("CapitalContext -- Ingestion Pipeline")
     print("=" * 40)
     summary = ingest_all()
     if "error" in summary:
@@ -183,3 +302,5 @@ if __name__ == "__main__":
         print(f"\nSummary:")
         print(f"  Documents: {summary['docs_ingested']}")
         print(f"  Total chunks: {summary['total_chunks']}")
+        for fname, res in summary["results"].items():
+            print(f"  {fname}: {res['chunks']} chunks ({res['asset_class']})")

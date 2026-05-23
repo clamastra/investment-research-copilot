@@ -44,32 +44,44 @@ PROMPT_MAP = {
 
 # --- Step 1: Retrieval -------------------------------------------------------
 
-def retrieve(query: str, n_results: int = DEFAULT_N_RESULTS) -> list[dict]:
+def retrieve(
+    query: str,
+    n_results: int = DEFAULT_N_RESULTS,
+    asset_class: str = None,
+    source: str = None,
+) -> list[dict]:
     """
     Embeds the user query and retrieves the n most semantically similar chunks
-    from ChromaDB, then filters out any chunks above the distance threshold.
+    from ChromaDB, with optional pre-filtering by asset class or document name.
 
-    Two-stage approach:
-    1. Fetch n_results candidates (wider net than before)
-    2. Filter by DISTANCE_THRESHOLD — removes chunks that are too dissimilar
-       to be useful, even if they were the "best" available matches
+    Pre-filtering (the 'where' clause) scopes the search to a subset of the
+    collection before similarity search runs. This is more efficient than
+    post-filtering and prevents irrelevant documents from polluting results.
 
-    This prevents Claude from being handed irrelevant context just because
-    ChromaDB always returns something, even for poor queries.
+    Filter priority: source (specific doc) > asset_class > no filter (all docs)
 
-    Distance score: lower = more similar. Cosine distance of 0 = identical.
+    Two-stage retrieval:
+    1. Pre-filter by metadata (optional), then fetch n_results candidates
+    2. Post-filter by DISTANCE_THRESHOLD — removes low-relevance chunks
     """
     collection = get_collection()
 
     if collection.count() == 0:
         return []
 
-    # Cap n_results at collection size to avoid ChromaDB errors on small collections
     n = min(n_results, collection.count())
+
+    # Build metadata filter — ChromaDB 'where' clause
+    where = None
+    if source:
+        where = {"source": {"$eq": source}}
+    elif asset_class and asset_class != "All Documents":
+        where = {"asset_class": {"$eq": asset_class}}
 
     results = collection.query(
         query_texts=[query],
         n_results=n,
+        where=where,
         include=["documents", "metadatas", "distances"],
     )
 
@@ -77,7 +89,6 @@ def retrieve(query: str, n_results: int = DEFAULT_N_RESULTS) -> list[dict]:
     for i, doc in enumerate(results["documents"][0]):
         distance = round(results["distances"][0][i], 4)
 
-        # Skip chunks that are too dissimilar to be useful
         if distance > DISTANCE_THRESHOLD:
             continue
 
@@ -86,6 +97,7 @@ def retrieve(query: str, n_results: int = DEFAULT_N_RESULTS) -> list[dict]:
             "source": results["metadatas"][0][i]["source"],
             "page": results["metadatas"][0][i]["page"],
             "file": results["metadatas"][0][i]["file"],
+            "asset_class": results["metadatas"][0][i].get("asset_class", "Unknown"),
             "distance": distance,
         })
 
@@ -151,24 +163,34 @@ def generate_response(query: str, chunks: list[dict], mode: str) -> str:
 
 # --- Full pipeline ------------------------------------------------------------
 
-def query(question: str, mode: str = "Q&A with citations", n_results: int = DEFAULT_N_RESULTS) -> dict:
+def query(
+    question: str,
+    mode: str = "Q&A with citations",
+    n_results: int = DEFAULT_N_RESULTS,
+    asset_class: str = None,
+    source: str = None,
+) -> dict:
     """
     Full RAG pipeline entry point.
 
-    1. Retrieve relevant chunks from ChromaDB
+    1. Retrieve relevant chunks from ChromaDB (with optional scope filters)
     2. Generate a grounded response via Claude API
     3. Return response text + source chunks for display and citation
 
+    asset_class: filter to a specific asset class (e.g. "Fixed Income")
+    source: filter to a specific document (e.g. "Vanguard 500 Index Annual Report")
+
     Returns a dict with keys: response, sources, mode, error
     """
-    chunks = retrieve(question, n_results)
+    chunks = retrieve(question, n_results, asset_class=asset_class, source=source)
 
     if not chunks:
+        scope = source or asset_class or "all documents"
         return {
             "response": None,
             "sources": [],
             "mode": mode,
-            "error": "No documents found in the knowledge base. Please ingest PDFs first.",
+            "error": f"No relevant content found in {scope}. Try broadening your scope or rephrasing your query.",
         }
 
     response_text = generate_response(question, chunks, mode)
