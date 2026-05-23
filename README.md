@@ -155,19 +155,19 @@ streamlit run app.py
 - [x] Ingest button wired into Streamlit UI
 
 ### ✅ Week 3 — RAG Pipeline (Complete)
-- [x] Semantic retrieval from ChromaDB (top-k chunks by cosine similarity)
-- [x] Context formatting with labeled source blocks for citation
-- [x] Claude API integration (claude-3-5-haiku-20241022, configurable)
-- [x] Hallucination controls via prompt engineering (sources-only instruction)
-- [x] All 4 output modes wired to prompt templates
-- [x] Response + source chunks displayed in Streamlit UI
-- [ ] Live query testing (pending API key setup)
+- [x] Semantic retrieval from ChromaDB with 10-candidate wider net
+- [x] Distance threshold filtering (0.7) — removes low-relevance chunks before generation
+- [x] Citation format: [Document Name | Page N] — no ambiguous numbered sources
+- [x] Claude API integration (claude-haiku-4-5-20251001, configurable)
+- [x] Hallucination controls — sources-only prompts + explicit gap disclosure
+- [x] All 4 output modes tested end-to-end against real Vanguard documents
+- [x] Retrieval failure mode documented: vocabulary mismatch, query expansion flagged as next improvement
 
-### ⬜ Week 4 — Structured Outputs
-- [ ] IC Memo drafting
-- [ ] Risk summary generation
-- [ ] Manager comparison tables
-- [ ] Fee structure extraction
+### ✅ Week 4 — Structured Outputs (Complete ahead of schedule)
+- [x] IC Memo drafting — full structured memo with Executive Summary, Key Risks, Manager Assessment, Recommendation
+- [x] Risk summary — categorized by Market, Liquidity, Operational, Counterparty, Regulatory risk
+- [x] Manager comparison — structured table with explicit data gap disclosure
+- [x] Fee structure extraction — surfaced via Q&A and comparison modes
 
 ### ⬜ Week 5 — Polish
 - [ ] UI refinement
