@@ -142,7 +142,7 @@ def extract_pages(pdf_path: Path) -> list[dict]:
     pages = []
     for i, page in enumerate(doc):
         text = page.get_text().strip()
-        if len(text) > 50:
+        if text:  # skip only truly empty/whitespace-only pages
             pages.append({
                 "page_num": i + 1,
                 "text": text,
