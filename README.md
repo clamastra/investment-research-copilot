@@ -202,7 +202,7 @@ streamlit run app.py
 | **Vocabulary mismatch** | Queries using different terminology than source documents may retrieve suboptimal chunks | Query expansion — LLM rewrites user query into multiple domain-appropriate phrasings before retrieval |
 | **No hybrid search** | Semantic search only — exact keyword matching not supported | Combine vector search with BM25 keyword search and merge results |
 | **No citation verification** | System trusts that cited page numbers match retrieved chunks but does not programmatically verify | Parse model response, cross-check cited pages against retrieved chunk metadata, flag mismatches |
-| **First-page classification** | Asset class auto-classification uses first page only — may misclassify documents where cover pages lack fund details | Extend to first 3 pages + weight document filename as a classification signal |
+| **Classification edge cases** | Auto-classification uses filename + first 3 pages — may misclassify documents with generic or ambiguous filenames | Manual override available in Document inventory — no re-ingestion required |
 | **No re-ranking** | Retrieved chunks are ranked by embedding similarity only | Add cross-encoder re-ranking pass after retrieval for higher precision |
 
 ---
