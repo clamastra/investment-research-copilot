@@ -13,6 +13,7 @@ The only external call is the asset class classification (one Claude call per do
 """
 
 import os
+import json
 import fitz  # PyMuPDF
 import chromadb
 import anthropic
@@ -34,6 +35,7 @@ if _env_path.exists():
 
 RAW_PDF_DIR = Path("data/raw_pdfs")
 VECTOR_STORE_DIR = Path("vector_store")
+OVERRIDES_PATH = VECTOR_STORE_DIR / "classification_overrides.json"
 
 # --- Asset class labels ------------------------------------------------------
 
@@ -46,6 +48,32 @@ ASSET_CLASSES = [
     "ESG / CSR",
     "Other",
 ]
+
+# --- Classification overrides ------------------------------------------------
+
+def load_overrides() -> dict:
+    """
+    Loads manual classification overrides from disk.
+    Returns a dict mapping document name -> asset class.
+    Overrides are applied on top of auto-classification — they always win.
+    """
+    if OVERRIDES_PATH.exists():
+        with open(OVERRIDES_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_override(doc_name: str, asset_class: str) -> None:
+    """
+    Saves a manual classification override for a document.
+    Creates the overrides file if it doesn't exist.
+    """
+    VECTOR_STORE_DIR.mkdir(exist_ok=True)
+    overrides = load_overrides()
+    overrides[doc_name] = asset_class
+    with open(OVERRIDES_PATH, "w", encoding="utf-8") as f:
+        json.dump(overrides, f, indent=2)
+
 
 # --- ChromaDB setup ----------------------------------------------------------
 
@@ -107,6 +135,14 @@ def classify_document(opening_text: str, doc_name: str) -> str:
 Categories:
 {options}
 
+Filename pattern examples:
+- "500 Index", "S&P", "Large Cap Growth", "US Equity Fund" -> US Equity
+- "International", "Emerging Markets", "Global ex-US", "EAFE" -> International Equity
+- "Bond", "Fixed Income", "Treasury", "Credit", "Total Bond" -> Fixed Income
+- "Balanced", "Target Date", "Multi-Asset", "Allocation" -> Multi-Asset
+- "Outlook", "Economic", "Market Outlook", "Macro", "Forecast" -> Macro / Economic Outlook
+- "CSR", "Sustainability", "ESG", "Responsible", "Impact" -> ESG / CSR
+
 DOCUMENT FILENAME (primary signal — weight this heavily):
 {doc_name}
 
@@ -114,8 +150,8 @@ OPENING CONTENT — first 3 pages (supporting evidence):
 {opening_text[:4000]}
 
 Instructions:
-- The filename is usually the strongest indicator. Use it as your primary signal.
-- Use the page content to resolve ambiguity if the filename is unclear.
+- The filename is the strongest indicator. Use the pattern examples above to guide you.
+- Use page content only to resolve ambiguity when the filename is unclear.
 - Respond with ONLY the category name. No explanation, no punctuation, nothing else.
 
 Category:"""
@@ -285,6 +321,12 @@ def get_collection_stats() -> dict:
             src = m.get("source", "Unknown")
             cls = m.get("asset_class", "Unknown")
             doc_class_map[src] = cls
+
+        # Apply manual overrides — they always win over auto-classification
+        overrides = load_overrides()
+        for doc, cls in overrides.items():
+            if doc in doc_class_map:
+                doc_class_map[doc] = cls
 
         docs = sorted(doc_class_map.keys())
         classes = sorted(set(doc_class_map.values()))

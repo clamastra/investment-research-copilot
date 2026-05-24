@@ -1,5 +1,5 @@
 import streamlit as st
-from ingest import ingest_all, get_collection_stats
+from ingest import ingest_all, get_collection_stats, save_override, ASSET_CLASSES
 from rag import query as rag_query
 
 st.set_page_config(
@@ -23,12 +23,30 @@ with col1:
     if stats["ready"]:
         st.success(f"Vector store ready — {stats['total_chunks']} chunks indexed")
 
+        # Document inventory with manual override
+        doc_class_map = stats.get("doc_class_map", {})
+        with st.expander("Document inventory", expanded=True):
+            for doc, cls in sorted(doc_class_map.items()):
+                st.markdown(f"**{doc}**")
+                new_cls = st.selectbox(
+                    "Asset class",
+                    ASSET_CLASSES,
+                    index=ASSET_CLASSES.index(cls) if cls in ASSET_CLASSES else len(ASSET_CLASSES) - 1,
+                    key=f"override_{doc}",
+                    label_visibility="collapsed",
+                )
+                if new_cls != cls:
+                    save_override(doc, new_cls)
+                    st.toast(f"Updated: {doc} -> {new_cls}")
+                    st.rerun()
+
+        st.divider()
+
         # Asset class filter
         asset_class_options = ["All Documents"] + stats["asset_classes"]
         selected_class = st.selectbox("Filter by asset class", asset_class_options)
 
         # Document filter — scoped to selected asset class
-        doc_class_map = stats.get("doc_class_map", {})
         if selected_class == "All Documents":
             filtered_docs = stats["documents"]
         else:
@@ -43,6 +61,7 @@ with col1:
         st.info("No documents indexed yet. Click Ingest to load PDFs from data/raw_pdfs/.")
         selected_class = "All Documents"
         selected_doc = "All Documents"
+        doc_class_map = {}
 
     if st.button("Ingest Documents", type="primary"):
         with st.spinner("Classifying and ingesting PDFs — this may take a minute..."):

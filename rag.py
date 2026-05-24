@@ -12,7 +12,7 @@ Flow:
 import os
 from pathlib import Path
 import anthropic
-from ingest import get_collection
+from ingest import get_collection, load_overrides
 from prompts import QA_PROMPT, MEMO_PROMPT, RISK_PROMPT, COMPARISON_PROMPT
 
 # Load .env manually using absolute path — reliable across all working directories
@@ -72,11 +72,25 @@ def retrieve(
     n = min(n_results, collection.count())
 
     # Build metadata filter — ChromaDB 'where' clause
+    # When filtering by asset class, account for manual overrides:
+    # some docs may have a different asset_class stored in ChromaDB
+    # but have been overridden by the user. Filter by source name for those.
     where = None
     if source:
         where = {"source": {"$eq": source}}
     elif asset_class and asset_class != "All Documents":
-        where = {"asset_class": {"$eq": asset_class}}
+        overrides = load_overrides()
+        overridden_to_class = [
+            doc for doc, cls in overrides.items() if cls == asset_class
+        ]
+        if overridden_to_class:
+            # Include docs stored with this asset_class OR overridden to it
+            where = {"$or": [
+                {"asset_class": {"$eq": asset_class}},
+                {"source": {"$in": overridden_to_class}},
+            ]}
+        else:
+            where = {"asset_class": {"$eq": asset_class}}
 
     results = collection.query(
         query_texts=[query],
