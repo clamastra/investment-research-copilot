@@ -85,14 +85,16 @@ def clear_collection():
 
 def classify_document(opening_text: str, doc_name: str) -> str:
     """
-    Sends the first page of a document to Claude and returns one of the
-    predefined asset class labels.
+    Classifies a document into one of the predefined asset class labels using
+    Claude Haiku. Uses the document filename as the primary signal and the
+    first 3 pages of content as supporting evidence.
 
-    This is a constrained classification task — Claude is given only the
-    predefined options and instructed to return exactly one label with no
-    explanation. One API call per document at ingestion time.
+    Filename is weighted first because it is usually the most explicit indicator
+    (e.g. 'Vanguard Total Bond Market Annual Report' is unambiguous even if the
+    first pages are cover art or disclaimers).
 
-    Falls back to "Other" if the API call fails or returns an unexpected value.
+    Constrained to max_tokens=20 so Claude cannot write explanations — only
+    a label. Falls back to 'Other' if the response is unexpected or the API fails.
     """
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
@@ -100,15 +102,23 @@ def classify_document(opening_text: str, doc_name: str) -> str:
         return "Other"
 
     options = "\n".join(f"- {cls}" for cls in ASSET_CLASSES)
-    prompt = f"""Classify the following investment document into exactly one of these categories:
+    prompt = f"""You are classifying an institutional investment document into exactly one asset class category.
 
+Categories:
 {options}
 
-Document name: {doc_name}
-Opening content (first 3 pages):
+DOCUMENT FILENAME (primary signal — weight this heavily):
+{doc_name}
+
+OPENING CONTENT — first 3 pages (supporting evidence):
 {opening_text[:4000]}
 
-Respond with only the category name, nothing else."""
+Instructions:
+- The filename is usually the strongest indicator. Use it as your primary signal.
+- Use the page content to resolve ambiguity if the filename is unclear.
+- Respond with ONLY the category name. No explanation, no punctuation, nothing else.
+
+Category:"""
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
