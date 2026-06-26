@@ -12,18 +12,27 @@ Flow:
 import os
 from pathlib import Path
 import anthropic
+from dotenv import load_dotenv
 from ingest import get_collection, load_overrides
 from prompts import QA_PROMPT, MEMO_PROMPT, RISK_PROMPT, COMPARISON_PROMPT
 
-# Load .env manually using absolute path — reliable across all working directories
-_env_path = Path(__file__).resolve().parent / ".env"
-if _env_path.exists():
-    with open(_env_path, encoding="utf-8") as _f:
-        for _line in _f:
-            _line = _line.strip()
-            if _line and not _line.startswith("#") and "=" in _line:
-                _key, _val = _line.split("=", 1)
-                os.environ[_key.strip()] = _val.strip()
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
+
+# --- Anthropic client singleton ----------------------------------------------
+
+_anthropic_client: anthropic.Anthropic | None = None
+
+def _get_anthropic_client() -> anthropic.Anthropic:
+    global _anthropic_client
+    if _anthropic_client is None:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "ANTHROPIC_API_KEY not found. Create a .env file and add your key."
+            )
+        _anthropic_client = anthropic.Anthropic(api_key=api_key)
+    return _anthropic_client
+
 
 # --- Configuration -----------------------------------------------------------
 
@@ -92,12 +101,25 @@ def retrieve(
         else:
             where = {"asset_class": {"$eq": asset_class}}
 
-    results = collection.query(
-        query_texts=[query],
-        n_results=n,
-        where=where,
-        include=["documents", "metadatas", "distances"],
-    )
+    # ChromaDB raises if n_results > number of documents matching the where filter.
+    # We know total collection count but not filtered count, so catch and retry.
+    try:
+        results = collection.query(
+            query_texts=[query],
+            n_results=n,
+            where=where,
+            include=["documents", "metadatas", "distances"],
+        )
+    except Exception as e:
+        if "Number of requested results" in str(e) and n > 1:
+            results = collection.query(
+                query_texts=[query],
+                n_results=1,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
+        else:
+            raise
 
     chunks = []
     for i, doc in enumerate(results["documents"][0]):
@@ -106,13 +128,19 @@ def retrieve(
         if distance > DISTANCE_THRESHOLD:
             continue
 
+        meta = results["metadatas"][0][i]
         chunks.append({
-            "text": doc,
-            "source": results["metadatas"][0][i]["source"],
-            "page": results["metadatas"][0][i]["page"],
-            "file": results["metadatas"][0][i]["file"],
-            "asset_class": results["metadatas"][0][i].get("asset_class", "Unknown"),
-            "distance": distance,
+            "text":         doc,
+            "source":       meta["source"],
+            "source_label": meta.get("source_label", ""),
+            "company_name": meta.get("company_name", ""),
+            "filing_type":  meta.get("filing_type", ""),
+            "period":       meta.get("period", ""),
+            "filed_date":   meta.get("filed_date", ""),
+            "page":         meta["page"],
+            "file":         meta["file"],
+            "asset_class":  meta.get("asset_class", "Unknown"),
+            "distance":     distance,
         })
 
     return chunks
@@ -124,16 +152,17 @@ def format_context(chunks: list[dict]) -> str:
     """
     Formats retrieved chunks into a numbered, labeled source block for the prompt.
 
-    Each chunk is labeled with its document name and page number.
-    This is what makes citations possible — Claude can reference
-    [Source 1: vanguard_outlook, Page 3] in its response.
+    Uses source_label when available ("Pimco Funds — N-CSR (2025-11-30)"),
+    falling back to the raw source slug for legacy chunks without the field.
+    The page number is always appended so Claude can cite specific pages.
 
     The separator between chunks helps the model distinguish where one
     source ends and another begins.
     """
     parts = []
     for chunk in chunks:
-        label = f"[{chunk['source']} | Page {chunk['page']}]"
+        display = chunk.get("source_label") or chunk["source"]
+        label = f"[{display} | Page {chunk['page']}]"
         parts.append(f"{label}\n{chunk['text']}")
 
     return "\n\n---\n\n".join(parts)
@@ -153,18 +182,15 @@ def generate_response(query: str, chunks: list[dict], mode: str) -> str:
 
     This is the hallucination control mechanism.
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "ANTHROPIC_API_KEY not found. Create a .env file and add your key."
-        )
-
-    client = anthropic.Anthropic(api_key=api_key)
+    client = _get_anthropic_client()
     context = format_context(chunks)
 
     # Select the right prompt template for the output mode
     prompt_template = PROMPT_MAP.get(mode, QA_PROMPT)
-    prompt = prompt_template.format(context=context, question=query)
+    # Escape braces in context so .format() doesn't misinterpret {ticker} or
+    # similar strings in source documents as template placeholders.
+    safe_context = context.replace("{", "{{").replace("}", "}}")
+    prompt = prompt_template.format(context=safe_context, question=query)
 
     response = client.messages.create(
         model=MODEL,
@@ -207,7 +233,15 @@ def query(
             "error": f"No relevant content found in {scope}. Try broadening your scope or rephrasing your query.",
         }
 
-    response_text = generate_response(question, chunks, mode)
+    try:
+        response_text = generate_response(question, chunks, mode)
+    except Exception as e:
+        return {
+            "response": None,
+            "sources": chunks,
+            "mode": mode,
+            "error": f"Response generation failed: {e}",
+        }
 
     return {
         "response": response_text,

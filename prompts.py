@@ -1,5 +1,4 @@
-# Prompt templates for each output mode
-# Week 3: Q&A, IC memo, risk summary, manager comparison
+# Prompt templates for each output mode — Q&A, IC memo, risk summary, manager comparison
 
 QA_PROMPT = """\
 You are an institutional investment research assistant. Answer the question below using only the provided source passages.

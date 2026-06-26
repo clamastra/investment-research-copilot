@@ -1,7 +1,7 @@
-streamlit
-anthropic
-chromadb
-pymupdf
-python-dotenv
-pandas
-sentence-transformers
+streamlit>=1.35,<2.0
+anthropic>=0.30,<1.0
+chromadb>=0.5,<1.0
+pymupdf>=1.24,<2.0
+python-dotenv>=1.0,<2.0
+sentence-transformers>=3.0,<4.0
+requests>=2.31,<3.0

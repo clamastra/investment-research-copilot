@@ -1,6 +1,7 @@
 import streamlit as st
-from ingest import ingest_all, get_collection_stats, save_override, ASSET_CLASSES
+from ingest import ingest_all, get_collection_stats, save_override, invalidate_stats_cache, ASSET_CLASSES
 from rag import query as rag_query
+from sourcing import search_edgar, get_filing_pdfs, download_pdf, FORM_TYPES
 
 # --- Page config -------------------------------------------------------------
 
@@ -224,7 +225,8 @@ with col1:
         st.divider()
 
         # --- Ingest button ---------------------------------------------------
-        if st.button("⟳  Ingest Documents", type="primary", use_container_width=True):
+        if st.button("⟳  Ingest Documents", type="primary", use_container_width=True,
+                     key="ingest_btn"):
             with st.spinner("Classifying and ingesting PDFs..."):
                 summary = ingest_all(clear_first=True)
             if "error" in summary:
@@ -233,8 +235,10 @@ with col1:
                 st.success(f"{summary['docs_ingested']} docs — {summary['total_chunks']} chunks indexed")
                 with st.expander("Ingestion details"):
                     for filename, res in summary["results"].items():
+                        cls_label = res.get("asset_class", "Unknown")
+                        status = "" if res["chunks"] > 0 else " ⚠️ 0 chunks"
                         st.markdown(
-                            f"**{filename}** — {res['chunks']} chunks &nbsp;" + badge(res["asset_class"]),
+                            f"**{filename}** — {res['chunks']} chunks{status} &nbsp;" + badge(cls_label),
                             unsafe_allow_html=True,
                         )
                 st.rerun()
@@ -270,6 +274,7 @@ with col1:
             )
             if st.button("Apply", key="reclassify_apply"):
                 save_override(target_doc, new_cls)
+                invalidate_stats_cache()
                 st.toast(f"Reclassified → {new_cls}")
                 st.rerun()
 
@@ -280,84 +285,183 @@ with col1:
 
     if not stats["ready"]:
         st.divider()
-        if st.button("⟳  Ingest Documents", type="primary", use_container_width=True):
-            with st.spinner("Classifying and ingesting PDFs..."):
-                summary = ingest_all(clear_first=True)
-            if "error" in summary:
-                st.error(summary["error"])
-            else:
-                st.success(f"{summary['docs_ingested']} docs — {summary['total_chunks']} chunks indexed")
-                st.rerun()
 
 # =============================================================================
-# RIGHT COLUMN
+# RIGHT COLUMN — tabbed
 # =============================================================================
 
 with col2:
-    st.markdown("### Research Query")
+    tab_query, tab_source = st.tabs(["Research Query", "Source Documents"])
 
-    if stats["ready"]:
-        if selected_doc != "All Documents":
-            st.markdown(scope_tag(selected_doc), unsafe_allow_html=True)
-        elif selected_class != "All Documents":
-            st.markdown(scope_tag(selected_class), unsafe_allow_html=True)
-        else:
-            st.markdown(scope_tag("All Documents"), unsafe_allow_html=True)
-        st.markdown("")
+    # ── Tab 1: Research Query ─────────────────────────────────────────────────
+    with tab_query:
+        st.markdown("### Research Query")
 
-    question = st.text_area(
-        "Research question",
-        placeholder=(
-            "e.g. Summarize key investment risks across all documents\n"
-            "e.g. What does Vanguard say about Federal Reserve policy in 2026?\n"
-            "e.g. Compare the fee structures and strategies of these funds"
-        ),
-        height=110,
-        label_visibility="collapsed",
-    )
-
-    qcol1, qcol2 = st.columns([2, 1])
-    with qcol1:
-        mode = st.selectbox(
-            "Output mode",
-            ["Q&A with citations", "IC Memo draft", "Risk summary", "Manager comparison"],
-        )
-    with qcol2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        run = st.button("Run Query →", type="primary", disabled=not question, use_container_width=True)
-
-    st.divider()
-    st.markdown("### Response")
-
-    if run and question:
-        active_class = None if selected_class == "All Documents" else selected_class
-        active_doc   = None if selected_doc   == "All Documents" else selected_doc
-
-        with st.spinner("Retrieving sources and generating response..."):
-            result = rag_query(
-                question=question,
-                mode=mode,
-                asset_class=active_class,
-                source=active_doc,
-            )
-
-        if result["error"]:
-            st.error(result["error"])
-        else:
-            st.markdown(
-                f'<div class="response-box">{result["response"]}</div>',
-                unsafe_allow_html=True,
-            )
+        if stats["ready"]:
+            if selected_doc != "All Documents":
+                st.markdown(scope_tag(selected_doc), unsafe_allow_html=True)
+            elif selected_class != "All Documents":
+                st.markdown(scope_tag(selected_class), unsafe_allow_html=True)
+            else:
+                st.markdown(scope_tag("All Documents"), unsafe_allow_html=True)
             st.markdown("")
-            with st.expander(f"Sources retrieved ({len(result['sources'])} chunks)"):
-                for i, chunk in enumerate(result["sources"]):
-                    c1, c2 = st.columns([3, 1])
-                    with c1:
-                        st.markdown(f"**{chunk['source']}** — Page {chunk['page']}")
-                        st.caption(chunk["text"][:280] + "...")
-                    with c2:
-                        st.markdown(badge(chunk.get("asset_class", "Other")), unsafe_allow_html=True)
-                        st.caption(f"dist: {chunk['distance']}")
-                    st.divider()
-    else:
-        st.caption("Source-grounded answers will appear here after you run a query.")
+
+        question = st.text_area(
+            "Research question",
+            placeholder=(
+                "e.g. Summarize key investment risks across all documents\n"
+                "e.g. What does Vanguard say about Federal Reserve policy in 2026?\n"
+                "e.g. Compare the fee structures and strategies of these funds"
+            ),
+            height=110,
+            label_visibility="collapsed",
+        )
+
+        qcol1, qcol2 = st.columns([2, 1])
+        with qcol1:
+            mode = st.selectbox(
+                "Output mode",
+                ["Q&A with citations", "IC Memo draft", "Risk summary", "Manager comparison"],
+            )
+        with qcol2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            run = st.button("Run Query →", type="primary", disabled=not question, use_container_width=True)
+
+        st.divider()
+        st.markdown("### Response")
+
+        if run and question:
+            active_class = None if selected_class == "All Documents" else selected_class
+            active_doc   = None if selected_doc   == "All Documents" else selected_doc
+
+            with st.spinner("Retrieving sources and generating response..."):
+                result = rag_query(
+                    question=question,
+                    mode=mode,
+                    asset_class=active_class,
+                    source=active_doc,
+                )
+
+            if result["error"]:
+                st.error(result["error"])
+            else:
+                st.markdown(
+                    f'<div class="response-box">{result["response"]}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown("")
+                with st.expander(f"Sources retrieved ({len(result['sources'])} chunks)"):
+                    for i, chunk in enumerate(result["sources"]):
+                        c1, c2 = st.columns([3, 1])
+                        with c1:
+                            display = chunk.get("source_label") or chunk["source"]
+                            st.markdown(f"**{display}** — Page {chunk['page']}")
+                            st.caption(chunk["text"][:280] + "...")
+                        with c2:
+                            st.markdown(badge(chunk.get("asset_class", "Other")), unsafe_allow_html=True)
+                            st.caption(f"dist: {chunk['distance']}")
+                        st.divider()
+        else:
+            st.caption("Source-grounded answers will appear here after you run a query.")
+
+    # ── Tab 2: Source Documents ───────────────────────────────────────────────
+    with tab_source:
+        st.markdown("### Source Documents from EDGAR")
+        st.caption("Search the SEC's public filing database by fund name or ticker.")
+
+        # Search inputs
+        sc1, sc2 = st.columns([3, 1])
+        with sc1:
+            search_query = st.text_input(
+                "Fund name or ticker",
+                placeholder="e.g. Vanguard 500, VFIAX, BlackRock, PIMCO Income",
+                label_visibility="collapsed",
+            )
+        with sc2:
+            search_btn = st.button("Search EDGAR", type="primary", use_container_width=True)
+
+        selected_forms = st.multiselect(
+            "Filing types",
+            options=list(FORM_TYPES.keys()),
+            default=["N-CSR", "485BPOS"],
+            format_func=lambda x: f"{x} — {FORM_TYPES[x]}",
+        )
+
+        st.divider()
+
+        # Search results
+        # Results are stored in session state so sub-button clicks (Find PDFs,
+        # Download) don't wipe the listing on rerun.
+        if search_btn and search_query:
+            if not selected_forms:
+                st.warning("Select at least one filing type.")
+            else:
+                with st.spinner(f"Searching EDGAR for '{search_query}'..."):
+                    _res = search_edgar(search_query, selected_forms)
+                # Clear stale per-filing doc state when a new search runs
+                for k in list(st.session_state.keys()):
+                    if k.startswith("pdfs_"):
+                        del st.session_state[k]
+                st.session_state["edgar_results"] = _res
+
+        results = st.session_state.get("edgar_results")
+
+        if results is not None:
+            if isinstance(results, dict) and "error" in results:
+                st.error(results["error"])
+            elif not results:
+                st.info("No filings found. Try a different name or broader filing types.")
+            else:
+                st.markdown(f"**{len(results)} filing(s) found:**")
+
+                for i, filing in enumerate(results):
+                    with st.expander(
+                        f"{filing['entity']} — {filing['form_type']} ({filing['date']})"
+                    ):
+                        fc1, fc2 = st.columns([2, 1])
+                        with fc1:
+                            st.markdown(f"**Type:** {filing['description']}")
+                            st.markdown(f"**Period:** {filing['period']}")
+                            st.markdown(f"**Filed:** {filing['date']}")
+                        with fc2:
+                            if st.button("Find Documents", key=f"find_{i}", use_container_width=True):
+                                st.session_state[f"pdfs_{i}"] = get_filing_pdfs(
+                                    filing["cik"], filing["accession"]
+                                )
+
+                        # Show documents (PDFs and HTML) if fetched
+                        docs = st.session_state.get(f"pdfs_{i}", [])
+                        # Check for error sentinel returned by get_filing_pdfs()
+                        if docs and "error" in docs[0]:
+                            st.error(docs[0]["error"])
+                            docs = []
+                        if docs:
+                            pdf_docs  = [d for d in docs if d["doc_type"] == "PDF"]
+                            html_docs = [d for d in docs if d["doc_type"] == "HTML"]
+
+                            if pdf_docs:
+                                st.markdown("**PDF documents:**")
+                            elif html_docs:
+                                st.caption("No PDFs — filing uses HTML format (standard for large fund companies)")
+                                st.markdown("**HTML documents:**")
+
+                            for j, doc in enumerate(docs):
+                                pc1, pc2, pc3 = st.columns([3, 1, 1])
+                                with pc1:
+                                    st.caption(doc["name"])
+                                with pc2:
+                                    st.caption(f"{doc['size_kb']} KB · {doc['doc_type']}")
+                                with pc3:
+                                    btn_label = "Download" if doc["doc_type"] == "PDF" else "Download HTML"
+                                    if st.button(btn_label, key=f"dl_{i}_{j}", use_container_width=True):
+                                        with st.spinner(f"Downloading {doc['name']}..."):
+                                            result = download_pdf(
+                                                doc["url"], doc["name"],
+                                                filing_meta=filing,
+                                            )
+                                        if result["success"]:
+                                            st.success("Saved — click Ingest to index it")
+                                        else:
+                                            st.error(result["error"])
+                        elif f"pdfs_{i}" in st.session_state:
+                            st.warning("No documents found in this filing index.")

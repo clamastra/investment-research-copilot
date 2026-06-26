@@ -222,3 +222,5 @@ data/raw_pdfs/
 data/processed/
 vector_store/
 screenshots/
+logs/
+_email_runner.py
